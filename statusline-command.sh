@@ -3,7 +3,6 @@ input=$(cat)
 
 cwd=$(echo "$input"      | jq -r '.workspace.current_dir // .cwd // ""')
 model=$(echo "$input"    | jq -r '.model.display_name // ""')
-raw_model="$model"   # keep the raw label to detect ccr-code sessions (vs Opus)
 # Clean CCR display: drop "openrouter,"/"gemini," prefix and ":free" suffix (cosmetic)
 model="${model#openrouter,}"
 model="${model#gemini,}"
@@ -125,30 +124,6 @@ if [ -n "$cost" ]; then
   [ -n "$cost_fmt" ] && cost_label="\$${cost_fmt}"
 fi
 
-# ── Gemini free-tier budget (ccr code sessions only; Opus sessions skip it) ─────
-# LIVE (re-reads gemini-state.json each render) so it tracks the real Gemini↔OpenRouter
-# state even mid-session, unlike the launch-fixed model label. ASCII only (exact width).
-gem_label="" gem_color="\033[32m"
-case "$raw_model" in
-  gemini,*|openrouter,*|*:free)
-    gstate="$HOME/.claude-code-router/gemini-state.json"
-    if [ -f "$gstate" ]; then
-      gbudget=12   # keep in sync with config transformers gemini-failover options.dailyBudget
-      gcd=$(jq -r '(.cooldownUntil // 0)|floor' "$gstate" 2>/dev/null)
-      gcnt=$(jq -r '(.count // 0)|floor' "$gstate" 2>/dev/null)
-      gnow=$(( $(date +%s) * 1000 ))
-      if [ -n "$gcd" ] && [ "$gcd" -gt "$gnow" ] 2>/dev/null; then
-        gmin=$(( (gcd - gnow) / 60000 ))
-        if [ "$gmin" -ge 60 ]; then gem_label="Gem>OR $(( gmin / 60 ))h"; else gem_label="Gem>OR ${gmin}m"; fi
-        gem_color="\033[90m"   # dim: Gemini spent, serving OpenRouter
-      else
-        gem_label="Gem ${gcnt}/${gbudget}"
-        [ "$gcnt" -ge $(( gbudget - 3 )) ] 2>/dev/null && gem_color="\033[33m"   # near failover
-      fi
-    fi
-    ;;
-esac
-
 # ── Visible widths of each group ──────────────────────────────────────────────
 wA_fixed=$(( ${#dir} + 4 ))
 [ -n "$git_dirty" ] && wA_dirty=$(( 1 + ${#git_dirty} )) || wA_dirty=0
@@ -158,7 +133,6 @@ wA_branch_overhead=$(( 2 + 3 + wA_dirty + wA_sync ))
 [ -n "$cav_label" ] && wA_caveman=$(( 2 + 3 + ${#cav_label} )) || wA_caveman=0
 
 wC=$(( 4 + ${#now} ))
-[ -n "$gem_label" ]  && wC=$(( wC + 1 + ${#gem_label} + 2 ))
 [ -n "$rl_label" ]   && wC=$(( wC + 1 + ${#rl_label} + 2 ))
 [ -n "$rl7_label" ]  && wC=$(( wC + 1 + ${#rl7_label} + 2 ))
 [ -n "$cost_label" ] && wC=$(( wC + ${#cost_label} + 3 + 2 ))
@@ -241,9 +215,6 @@ fi
 c_cost=""
 [ -n "$cost_label" ] && c_cost=$(printf "\033[32m💰 %s\033[0m" "$cost_label")
 
-c_gem=""
-[ -n "$gem_label" ] && c_gem=$(printf "${gem_color}%s\033[0m" "$gem_label")
-
 c_time=""
 
 # ── Layout decision ───────────────────────────────────────────────────────────
@@ -264,7 +235,6 @@ print_B() {
 }
 print_C() {
   local first=1
-  if [ -n "$c_gem" ];  then printf "%s" "$c_gem";  first=0; fi
   if [ -n "$c_rl" ];   then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_rl";   first=0; fi
   if [ -n "$c_rl7" ];  then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_rl7";  first=0; fi
   if [ -n "$c_cost" ]; then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_cost"; first=0; fi
