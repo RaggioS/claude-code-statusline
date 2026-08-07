@@ -3,8 +3,10 @@ input=$(cat)
 
 cwd=$(echo "$input"      | jq -r '.workspace.current_dir // .cwd // ""')
 model=$(echo "$input"    | jq -r '.model.display_name // ""')
-# Clean CCR display: drop "openrouter," prefix and ":free" suffix (cosmetic only)
+raw_model="$model"   # keep the raw label to detect ccr-code sessions (vs Opus)
+# Clean CCR display: drop "openrouter,"/"gemini," prefix and ":free" suffix (cosmetic)
 model="${model#openrouter,}"
+model="${model#gemini,}"
 model="${model%:free}"
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
 ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
@@ -12,6 +14,8 @@ used_tok=$(echo "$input" | jq -r '(.context_window.current_usage.input_tokens //
 cost=$(echo "$input"     | jq -r '.cost.total_cost_usd // empty')
 rl5_pct=$(echo "$input"  | jq -r '.rate_limits.five_hour.used_percentage // empty')
 rl5_rst=$(echo "$input"  | jq -r '.rate_limits.five_hour.resets_at // empty')
+rl7_pct=$(echo "$input"  | jq -r '.rate_limits.seven_day.used_percentage // empty')
+rl7_rst=$(echo "$input"  | jq -r '.rate_limits.seven_day.resets_at // empty')
 
 dir=$(basename "$cwd")
 now=$(date +%H:%M)
@@ -68,6 +72,7 @@ if [ -n "$used_pct" ]; then
   elif [ "$ctx" -ge 70 ]; then bar_color="\033[91m"
   elif [ "$ctx" -ge 50 ]; then bar_color="\033[33m"
   fi
+  c_ctx_min=$(printf "${bar_color}%s %s\033[0m" "$ctx_bar" "$ctx_pct_label")   # bar+pct only, for the ultra-narrow fallback below
   if [ -n "$used_tok" ] && [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null; then
     used_k=$(( used_tok / 1000 ))
     max_k=$(( ctx_size / 1000 ))
@@ -92,12 +97,57 @@ if [ -n "$rl5_pct" ]; then
   fi
 fi
 
+# ── Rate limit (weekly, if plan reports it) ─────────────────────────────────────
+rl7_label="" rl7_color="\033[32m"
+if [ -n "$rl7_pct" ]; then
+  rl7=$(printf "%.0f" "$rl7_pct")
+  if   [ "$rl7" -ge 90 ]; then rl7_color="\033[31m"
+  elif [ "$rl7" -ge 70 ]; then rl7_color="\033[91m"
+  elif [ "$rl7" -ge 50 ]; then rl7_color="\033[33m"
+  fi
+  rl7_label="${rl7}%"
+  if [ -n "$rl7_rst" ] && [ "$rl7_rst" -gt 0 ] 2>/dev/null; then
+    now_ts=$(date +%s)
+    mins7=$(( (rl7_rst - now_ts) / 60 ))
+    if [ "$mins7" -gt 0 ] && [ "$mins7" -lt 10080 ]; then
+      if   [ "$mins7" -ge 1440 ]; then rl7_label="${rl7_label} ↺$(( mins7 / 1440 ))d"
+      elif [ "$mins7" -ge 60 ];   then rl7_label="${rl7_label} ↺$(( mins7 / 60 ))h"
+      else                             rl7_label="${rl7_label} ↺${mins7}m"
+      fi
+    fi
+  fi
+fi
+
 # ── Cost ──────────────────────────────────────────────────────────────────────
 cost_label=""
 if [ -n "$cost" ]; then
   cost_fmt=$(printf "%.2f" "$cost" 2>/dev/null)
   [ -n "$cost_fmt" ] && cost_label="\$${cost_fmt}"
 fi
+
+# ── Gemini free-tier budget (ccr code sessions only; Opus sessions skip it) ─────
+# LIVE (re-reads gemini-state.json each render) so it tracks the real Gemini↔OpenRouter
+# state even mid-session, unlike the launch-fixed model label. ASCII only (exact width).
+gem_label="" gem_color="\033[32m"
+case "$raw_model" in
+  gemini,*|openrouter,*|*:free)
+    gstate="$HOME/.claude-code-router/gemini-state.json"
+    if [ -f "$gstate" ]; then
+      gbudget=12   # keep in sync with config transformers gemini-failover options.dailyBudget
+      gcd=$(jq -r '(.cooldownUntil // 0)|floor' "$gstate" 2>/dev/null)
+      gcnt=$(jq -r '(.count // 0)|floor' "$gstate" 2>/dev/null)
+      gnow=$(( $(date +%s) * 1000 ))
+      if [ -n "$gcd" ] && [ "$gcd" -gt "$gnow" ] 2>/dev/null; then
+        gmin=$(( (gcd - gnow) / 60000 ))
+        if [ "$gmin" -ge 60 ]; then gem_label="Gem>OR $(( gmin / 60 ))h"; else gem_label="Gem>OR ${gmin}m"; fi
+        gem_color="\033[90m"   # dim: Gemini spent, serving OpenRouter
+      else
+        gem_label="Gem ${gcnt}/${gbudget}"
+        [ "$gcnt" -ge $(( gbudget - 3 )) ] 2>/dev/null && gem_color="\033[33m"   # near failover
+      fi
+    fi
+    ;;
+esac
 
 # ── Visible widths of each group ──────────────────────────────────────────────
 wA_fixed=$(( ${#dir} + 4 ))
@@ -108,7 +158,9 @@ wA_branch_overhead=$(( 2 + 3 + wA_dirty + wA_sync ))
 [ -n "$cav_label" ] && wA_caveman=$(( 2 + 3 + ${#cav_label} )) || wA_caveman=0
 
 wC=$(( 4 + ${#now} ))
+[ -n "$gem_label" ]  && wC=$(( wC + 1 + ${#gem_label} + 2 ))
 [ -n "$rl_label" ]   && wC=$(( wC + 1 + ${#rl_label} + 2 ))
+[ -n "$rl7_label" ]  && wC=$(( wC + 1 + ${#rl7_label} + 2 ))
 [ -n "$cost_label" ] && wC=$(( wC + ${#cost_label} + 3 + 2 ))
 
 # Truncate model so model+ctx+rl+cost stay on ONE line (keeps 3-row layout)
@@ -181,8 +233,16 @@ if [ -n "$rl_label" ]; then
   c_rl=$(printf "${rl_color}⚡%s\033[0m" "$rl_label")
 fi
 
+c_rl7=""
+if [ -n "$rl7_label" ]; then
+  c_rl7=$(printf "${rl7_color}🗓️ %s\033[0m" "$rl7_label")
+fi
+
 c_cost=""
 [ -n "$cost_label" ] && c_cost=$(printf "\033[32m💰 %s\033[0m" "$cost_label")
+
+c_gem=""
+[ -n "$gem_label" ] && c_gem=$(printf "${gem_color}%s\033[0m" "$gem_label")
 
 c_time=""
 
@@ -204,14 +264,29 @@ print_B() {
 }
 print_C() {
   local first=1
-  if [ -n "$c_rl" ];   then printf "%s" "$c_rl";   first=0; fi
+  if [ -n "$c_gem" ];  then printf "%s" "$c_gem";  first=0; fi
+  if [ -n "$c_rl" ];   then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_rl";   first=0; fi
+  if [ -n "$c_rl7" ];  then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_rl7";  first=0; fi
   if [ -n "$c_cost" ]; then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_cost"; first=0; fi
 }
 
 # ── Output ────────────────────────────────────────────────────────────────────
 if [ "$cols" -le 36 ]; then
-  printf "%s" "$c_dir"
-  [ -n "$c_ctx" ] && printf "%s%s" "$SP" "$c_ctx"
+  # Ultra-narrow fallback: dir must itself be truncated here, and ctx only
+  # shown if bar+pct actually fit — the two-row layout below already truncates
+  # dir/model/branch against $effective, but this single-line path never did.
+  max_dir_n=$(( cols - 3 )); [ "$max_dir_n" -lt 3 ] && max_dir_n=3
+  dir_n="$dir"
+  if [ ${#dir_n} -gt "$max_dir_n" ]; then
+    trunc_n=$(( max_dir_n - 1 )); [ $trunc_n -lt 1 ] && trunc_n=1
+    dir_n=$(printf "%.${trunc_n}s…" "$dir_n")
+  fi
+  printf "\033[96m📂 %s\033[0m" "$dir_n"
+  if [ -n "$c_ctx_min" ]; then
+    ctx_min_w=$(( 10 + 1 + ${#ctx_pct_label} ))
+    used_w=$(( 3 + ${#dir_n} + 1 ))
+    [ $(( cols - used_w - ctx_min_w )) -ge 0 ] && printf " %s" "$c_ctx_min"
+  fi
 elif [ "$wBC" -le "$effective" ]; then
   print_A; printf "\n"; print_B; printf "%s" "$SP"; print_C
 else
