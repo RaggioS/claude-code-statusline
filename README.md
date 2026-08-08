@@ -20,7 +20,9 @@ On narrow terminals it collapses gracefully; on very narrow ones it shows only d
 - Context-window gauge: 10-cell bar, percent, `usedk/maxk` tokens, color ramps green → yellow → red as it fills
 - `/compact!` nudge once context passes a threshold (default 45%)
 - 5-hour rate-limit percentage with a reset countdown (`↺NNm`)
+- Optional weekly rate-limit percentage + reset countdown, if your plan reports it
 - Session cost in USD
+- Optional Gemini/OpenRouter free-tier budget indicator (CCR routing setups only) — invisible if `~/.claude-code-router/gemini-state.json` doesn't exist
 - Optional "caveman mode" badge — renders only if a flag file exists, otherwise invisible, so it never breaks a shared setup
 - Width-aware: reflows between one-line and stacked layouts based on `$COLUMNS`/`tput`
 - No external state, no network, no temp files — reads stdin JSON, prints, exits
