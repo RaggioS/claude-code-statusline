@@ -131,20 +131,17 @@ fi
 # ── Visible widths of each group ──────────────────────────────────────────────
 wA_fixed=$(( ${#dir} + 4 ))
 wA_branch_overhead=5   # SP(2) + "⎇ "(3)
-# Caveman badge visible width: SP(2) + 🦴(2 cols) + space(1) + label
-[ -n "$cav_label" ] && wA_caveman=$(( 2 + 3 + ${#cav_label} )) || wA_caveman=0
-# Ponytail badge visible width: SP(2) + 🦄(2 cols) + space(1) + label. Folded into
-# wA_caveman so the branch-truncation and layout math below need no further change.
-if [ -n "$pony_label" ]; then
-  wA_pony=$(( 2 + 3 + ${#pony_label} ))
-  # Narrow terminal: drop the ponytail badge when dir + badges overflow line 1, or when
-  # keeping it would squeeze the git branch out (< 7 cols left). Info beats decoration.
-  pony_room=$(( effective - wA_fixed - wA_branch_overhead - wA_caveman - wA_pony ))
-  if [ $(( wA_fixed + wA_caveman + wA_pony )) -gt "$effective" ] || { [ -n "$git_branch" ] && [ "$pony_room" -lt 7 ]; }; then
-    pony_label=""
-  else
-    wA_caveman=$(( wA_caveman + wA_pony ))
-  fi
+# Mode badges (caveman, ponytail): each is SP(2) + emoji(2 cols) + space(1) + label.
+# They stay on line 1 when dir + branch (>= 7 cols) + badges fit; otherwise they wrap to
+# their own line(s) below it. Never dropped.
+wD_cav=0; wD_pony=0
+[ -n "$cav_label" ]  && wD_cav=$(( 2 + 3 + ${#cav_label} ))
+[ -n "$pony_label" ] && wD_pony=$(( 2 + 3 + ${#pony_label} ))
+wD=$(( wD_cav + wD_pony ))
+wA_badges=0; badges_wrap=0
+if [ "$wD" -gt 0 ]; then
+  if [ -n "$git_branch" ]; then need=$(( wA_fixed + wA_branch_overhead + 7 + wD )); else need=$(( wA_fixed + wD )); fi
+  if [ "$need" -gt "$effective" ]; then badges_wrap=1; else wA_badges=$wD; fi
 fi
 
 wC=$(( 4 + ${#now} ))
@@ -174,7 +171,7 @@ fi
 branch_display="$git_branch"
 
 if [ -n "$git_branch" ]; then
-  max_branch=$(( effective - wA_fixed - wA_branch_overhead - wA_caveman ))
+  max_branch=$(( effective - wA_fixed - wA_branch_overhead - wA_badges ))
 
   if [ $max_branch -lt 7 ]; then
     branch_display=""
@@ -226,16 +223,31 @@ c_cost=""
 c_time=""
 
 # ── Layout decision ───────────────────────────────────────────────────────────
-wA=$(( wA_fixed + wA_branch_overhead + ${#branch_display} + wA_caveman ))
+wA=$(( wA_fixed + wA_branch_overhead + ${#branch_display} + wA_badges ))
 wBC=$(( wB + 2 + wC ))
-w1=$(( wA + 2 + wBC ))
 
 # ── Print helpers ─────────────────────────────────────────────────────────────
 print_A() {
   printf "%s" "$c_dir"
   [ -n "$c_branch"  ] && printf "%s%s" "$SP" "$c_branch"
-  [ -n "$c_caveman" ] && printf "%s%s" "$SP" "$c_caveman"
-  [ -n "$c_pony"    ] && printf "%s%s" "$SP" "$c_pony"
+  if [ "$badges_wrap" -eq 0 ]; then
+    [ -n "$c_caveman" ] && printf "%s%s" "$SP" "$c_caveman"
+    [ -n "$c_pony"    ] && printf "%s%s" "$SP" "$c_pony"
+  else
+    print_badges_wrapped "$effective"
+  fi
+}
+# Badges on their own line(s): one line if both fit in $1 columns, else one per line.
+print_badges_wrapped() {
+  if [ $(( wD - 2 )) -le "$1" ]; then
+    printf "\n"
+    [ -n "$c_caveman" ] && printf "%s" "$c_caveman"
+    [ -n "$c_caveman" ] && [ -n "$c_pony" ] && printf "%s" "$SP"
+    [ -n "$c_pony" ] && printf "%s" "$c_pony"
+  else
+    [ -n "$c_caveman" ] && printf "\n%s" "$c_caveman"
+    [ -n "$c_pony"    ] && printf "\n%s" "$c_pony"
+  fi
 }
 print_B() {
   printf "%s" "$c_model"
@@ -265,6 +277,8 @@ if [ "$cols" -le 36 ]; then
     used_w=$(( 3 + ${#dir_n} + 1 ))
     [ $(( cols - used_w - ctx_min_w )) -ge 0 ] && printf " %s" "$c_ctx_min"
   fi
+  # Badges never dropped: on their own line(s) below.
+  [ "$wD" -gt 0 ] && print_badges_wrapped "$cols"
 elif [ "$wBC" -le "$effective" ]; then
   print_A; printf "\n"; print_B; printf "%s" "$SP"; print_C
 else

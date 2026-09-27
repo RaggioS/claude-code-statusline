@@ -21,7 +21,7 @@ On narrow terminals it collapses gracefully; on very narrow ones it shows only d
 - 5-hour rate-limit percentage with a reset countdown (`↺NNm`)
 - Optional weekly rate-limit percentage + reset countdown, if your plan reports it
 - Session cost in USD
-- Optional "caveman mode" badge (`🦴 ULTRA`) and "ponytail mode" badge (`🦄 FULL`) — each renders only if the plugin's flag file (`.caveman-active`, `.ponytail-active` in `~/.claude`, or in `$CLAUDE_CONFIG_DIR` if set) exists with a valid mode, otherwise invisible, so it never breaks a shared setup. The ponytail badge is dropped automatically on narrow terminals, when it would overflow the first line or squeeze the git branch out
+- Optional "caveman mode" badge (`🦴 ULTRA`) and "ponytail mode" badge (`🦄 FULL`) — each renders only if the plugin's flag file (`.caveman-active`, `.ponytail-active` in `~/.claude`, or in `$CLAUDE_CONFIG_DIR` if set) exists with a valid mode, otherwise invisible, so it never breaks a shared setup. Badges are never dropped: when they do not fit next to the directory and branch they wrap onto their own line
 - Width-aware: reflows between one-line and stacked layouts based on `$COLUMNS`/`tput`
 - No external state, no network, no temp files — reads stdin JSON, prints, exits
 
