@@ -11,7 +11,7 @@ It packs directory, git branch, model, a colored context-window gauge, 5-hour ra
 ◆ claude-opus-4-8  ■■■□□□□□□□ 28% 56k/200k  ⚡12% ↺143m  💰 $0.42
 ```
 
-On narrow terminals it collapses gracefully; on very narrow ones it shows only directory + context gauge.
+On narrow terminals it collapses gracefully; on very narrow ones it shows only directory + context gauge, plus any mode badges on their own line.
 
 ## Features
 

@@ -284,3 +284,5 @@ elif [ "$wBC" -le "$effective" ]; then
 else
   print_A; printf "\n"; print_B; printf "\n"; print_C
 fi
+
+exit 0
