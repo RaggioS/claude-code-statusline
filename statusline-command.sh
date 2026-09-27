@@ -3,11 +3,6 @@ input=$(cat)
 
 cwd=$(echo "$input"      | jq -r '.workspace.current_dir // .cwd // ""')
 model=$(echo "$input"    | jq -r '.model.display_name // ""')
-raw_model="$model"   # keep the raw label to detect ccr-code sessions (vs Opus)
-# Clean CCR display: drop "openrouter,"/"gemini," prefix and ":free" suffix (cosmetic)
-model="${model#openrouter,}"
-model="${model#gemini,}"
-model="${model%:free}"
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
 ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
 used_tok=$(echo "$input" | jq -r '(.context_window.current_usage.input_tokens // 0) + (.context_window.current_usage.cache_read_input_tokens // 0) + (.context_window.current_usage.cache_creation_input_tokens // 0)')
@@ -33,13 +28,9 @@ fi
 effective=$(( cols - 4 ))
 
 # ── Git ───────────────────────────────────────────────────────────────────────
-git_branch="" git_dirty="" git_sync=""
+git_branch=""
 if [ -n "$cwd" ] && [ -d "$cwd/.git" ]; then
   git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
-  if [ -n "$git_branch" ]; then
-    true
-    true
-  fi
 fi
 
 # ── Caveman mode (optional badge; absent if plugin not installed) ───────────────
@@ -57,9 +48,22 @@ if [ -f "$cav_flag" ] && [ ! -L "$cav_flag" ]; then
   esac
 fi
 
+# ── Ponytail mode (optional badge; absent if plugin not installed or off) ────────
+# Same hardening as the caveman block: flag written by ponytail's SessionStart hook
+# (~/.claude/.ponytail-active), symlinks refused, 64-byte cap, [a-z0-9-] only,
+# whitelisted mode. Missing flag or "off" renders nothing.
+pony_label=""
+pony_flag="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.ponytail-active"
+if [ -f "$pony_flag" ] && [ ! -L "$pony_flag" ]; then
+  pony_mode=$(head -c 64 "$pony_flag" 2>/dev/null | tr -d '\n\r' | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
+  case "$pony_mode" in
+    lite|full|ultra|review)
+      pony_label=$(printf '%s' "$pony_mode" | tr '[:lower:]' '[:upper:]') ;;
+  esac
+fi
+
 # ── Context bar ───────────────────────────────────────────────────────────────
 ctx_bar="" ctx_pct_label="" ctx_tok_label="" bar_color="\033[32m"
-compact_warn=0; COMPACT_WARN_PCT=45   # show "/compact!" nudge at/above this ctx %
 if [ -n "$used_pct" ]; then
   ctx=$(printf "%.0f" "$used_pct")
   filled=$(( ctx / 10 )); empty=$(( 10 - filled ))
@@ -67,7 +71,6 @@ if [ -n "$used_pct" ]; then
   i=0; while [ $i -lt $filled ]; do bar="${bar}■"; i=$((i+1)); done
   i=0; while [ $i -lt $empty  ]; do bar="${bar}□"; i=$((i+1)); done
   ctx_bar="$bar"; ctx_pct_label="${ctx}%"
-  [ "$ctx" -ge "$COMPACT_WARN_PCT" ] 2>/dev/null && compact_warn=1
   if   [ "$ctx" -ge 90 ]; then bar_color="\033[31m"
   elif [ "$ctx" -ge 70 ]; then bar_color="\033[91m"
   elif [ "$ctx" -ge 50 ]; then bar_color="\033[33m"
@@ -125,40 +128,23 @@ if [ -n "$cost" ]; then
   [ -n "$cost_fmt" ] && cost_label="\$${cost_fmt}"
 fi
 
-# ── Gemini free-tier budget (ccr code sessions only; Opus sessions skip it) ─────
-# LIVE (re-reads gemini-state.json each render) so it tracks the real Gemini↔OpenRouter
-# state even mid-session, unlike the launch-fixed model label. ASCII only (exact width).
-gem_label="" gem_color="\033[32m"
-case "$raw_model" in
-  gemini,*|openrouter,*|*:free)
-    gstate="$HOME/.claude-code-router/gemini-state.json"
-    if [ -f "$gstate" ]; then
-      gbudget=12   # keep in sync with config transformers gemini-failover options.dailyBudget
-      gcd=$(jq -r '(.cooldownUntil // 0)|floor' "$gstate" 2>/dev/null)
-      gcnt=$(jq -r '(.count // 0)|floor' "$gstate" 2>/dev/null)
-      gnow=$(( $(date +%s) * 1000 ))
-      if [ -n "$gcd" ] && [ "$gcd" -gt "$gnow" ] 2>/dev/null; then
-        gmin=$(( (gcd - gnow) / 60000 ))
-        if [ "$gmin" -ge 60 ]; then gem_label="Gem>OR $(( gmin / 60 ))h"; else gem_label="Gem>OR ${gmin}m"; fi
-        gem_color="\033[90m"   # dim: Gemini spent, serving OpenRouter
-      else
-        gem_label="Gem ${gcnt}/${gbudget}"
-        [ "$gcnt" -ge $(( gbudget - 3 )) ] 2>/dev/null && gem_color="\033[33m"   # near failover
-      fi
-    fi
-    ;;
-esac
-
 # ── Visible widths of each group ──────────────────────────────────────────────
 wA_fixed=$(( ${#dir} + 4 ))
-[ -n "$git_dirty" ] && wA_dirty=$(( 1 + ${#git_dirty} )) || wA_dirty=0
-[ -n "$git_sync"  ] && wA_sync=$(( 2 + ${#git_sync} ))   || wA_sync=0
-wA_branch_overhead=$(( 2 + 3 + wA_dirty + wA_sync ))
-# Caveman badge visible width: SP(2) + 🦴(2 cols) + space(1) + label
-[ -n "$cav_label" ] && wA_caveman=$(( 2 + 3 + ${#cav_label} )) || wA_caveman=0
+wA_branch_overhead=5   # SP(2) + "⎇ "(3)
+# Mode badges (caveman, ponytail): each is SP(2) + emoji(2 cols) + space(1) + label.
+# They stay on line 1 when dir + branch (>= 7 cols) + badges fit; otherwise they wrap to
+# their own line(s) below it. Never dropped.
+wD_cav=0; wD_pony=0
+[ -n "$cav_label" ]  && wD_cav=$(( 2 + 3 + ${#cav_label} ))
+[ -n "$pony_label" ] && wD_pony=$(( 2 + 3 + ${#pony_label} ))
+wD=$(( wD_cav + wD_pony ))
+wA_badges=0; badges_wrap=0
+if [ "$wD" -gt 0 ]; then
+  if [ -n "$git_branch" ]; then need=$(( wA_fixed + wA_branch_overhead + 7 + wD )); else need=$(( wA_fixed + wD )); fi
+  if [ "$need" -gt "$effective" ]; then badges_wrap=1; else wA_badges=$wD; fi
+fi
 
 wC=$(( 4 + ${#now} ))
-[ -n "$gem_label" ]  && wC=$(( wC + 1 + ${#gem_label} + 2 ))
 [ -n "$rl_label" ]   && wC=$(( wC + 1 + ${#rl_label} + 2 ))
 [ -n "$rl7_label" ]  && wC=$(( wC + 1 + ${#rl7_label} + 2 ))
 [ -n "$cost_label" ] && wC=$(( wC + ${#cost_label} + 3 + 2 ))
@@ -168,7 +154,6 @@ ctx_w=0
 if [ -n "$ctx_bar" ]; then
   ctx_w=$(( 2 + 10 + 1 + ${#ctx_pct_label} ))
   [ -n "$ctx_tok_label" ] && ctx_w=$(( ctx_w + 1 + ${#ctx_tok_label} ))
-  [ "$compact_warn" -eq 1 ] && ctx_w=$(( ctx_w + 1 + 9 ))   # " /compact!"
 fi
 max_model=$(( effective - 4 - ctx_w - wC ))
 [ "$max_model" -lt 8 ] && max_model=8
@@ -180,21 +165,17 @@ wB=$(( 2 + ${#model} ))
 if [ -n "$ctx_bar" ]; then
   wB=$(( wB + 2 + 10 + 1 + ${#ctx_pct_label} ))
   [ -n "$ctx_tok_label" ] && wB=$(( wB + 1 + ${#ctx_tok_label} ))
-  [ "$compact_warn" -eq 1 ] && wB=$(( wB + 1 + 9 ))   # " /compact!"
 fi
 
 # ── Branch: truncate or drop to fit line 1 ───────────────────────────────────
 branch_display="$git_branch"
-show_sync="$git_sync"
 
 if [ -n "$git_branch" ]; then
-  max_branch=$(( effective - wA_fixed - wA_branch_overhead - wA_caveman ))
+  max_branch=$(( effective - wA_fixed - wA_branch_overhead - wA_badges ))
 
   if [ $max_branch -lt 7 ]; then
     branch_display=""
     wA_branch_overhead=0
-    w1_nosync=$(( wA_fixed + (${#git_dirty} > 0 ? 1 + ${#git_dirty} : 0) ))
-    [ $(( effective - w1_nosync )) -lt $(( 2 + ${#git_sync} )) ] && show_sync=""
   elif [ $max_branch -lt ${#git_branch} ]; then
     trunc=$(( max_branch - 3 ))
     [ $trunc -lt 4 ] && trunc=4
@@ -210,14 +191,13 @@ c_dir=$(printf "\033[96m📂 %s\033[0m" "$dir")
 c_branch=""
 if [ -n "$branch_display" ]; then
   c_branch=$(printf "\033[32m⎇ %s\033[0m" "$branch_display")
-  [ -n "$git_dirty" ] && c_branch="${c_branch}$(printf " \033[33m%s\033[0m" "$git_dirty")"
 fi
-
-c_sync=""
-[ -n "$show_sync" ] && c_sync=$(printf "\033[34m%s\033[0m" "$show_sync")
 
 c_caveman=""
 [ -n "$cav_label" ] && c_caveman=$(printf "\033[38;5;172m🦴 %s\033[0m" "$cav_label")
+
+c_pony=""
+[ -n "$pony_label" ] && c_pony=$(printf "\033[38;5;177m🦄 %s\033[0m" "$pony_label")
 
 c_model=$(printf "\033[35m◆ %s\033[0m" "$model")
 
@@ -225,7 +205,6 @@ c_ctx=""
 if [ -n "$ctx_bar" ]; then
   c_ctx=$(printf "${bar_color}%s %s\033[0m" "$ctx_bar" "$ctx_pct_label")
   [ -n "$ctx_tok_label" ] && c_ctx="${c_ctx}$(printf " \033[2m%s\033[0m" "$ctx_tok_label")"
-  [ "$compact_warn" -eq 1 ] && c_ctx="${c_ctx}$(printf " \033[1;31m/compact!\033[0m")"
 fi
 
 c_rl=""
@@ -241,30 +220,41 @@ fi
 c_cost=""
 [ -n "$cost_label" ] && c_cost=$(printf "\033[32m💰 %s\033[0m" "$cost_label")
 
-c_gem=""
-[ -n "$gem_label" ] && c_gem=$(printf "${gem_color}%s\033[0m" "$gem_label")
-
 c_time=""
 
 # ── Layout decision ───────────────────────────────────────────────────────────
-wA=$(( wA_fixed + wA_branch_overhead + ${#branch_display} + (${#show_sync} > 0 ? 2 + ${#show_sync} : 0) + wA_caveman ))
+wA=$(( wA_fixed + wA_branch_overhead + ${#branch_display} + wA_badges ))
 wBC=$(( wB + 2 + wC ))
-w1=$(( wA + 2 + wBC ))
 
 # ── Print helpers ─────────────────────────────────────────────────────────────
 print_A() {
   printf "%s" "$c_dir"
   [ -n "$c_branch"  ] && printf "%s%s" "$SP" "$c_branch"
-  [ -n "$c_sync"    ] && printf "%s%s" "$SP" "$c_sync"
-  [ -n "$c_caveman" ] && printf "%s%s" "$SP" "$c_caveman"
+  if [ "$badges_wrap" -eq 0 ]; then
+    [ -n "$c_caveman" ] && printf "%s%s" "$SP" "$c_caveman"
+    [ -n "$c_pony"    ] && printf "%s%s" "$SP" "$c_pony"
+  else
+    print_badges_wrapped "$effective"
+  fi
+}
+# Badges on their own line(s): one line if both fit in $1 columns, else one per line.
+print_badges_wrapped() {
+  if [ $(( wD - 2 )) -le "$1" ]; then
+    printf "\n"
+    [ -n "$c_caveman" ] && printf "%s" "$c_caveman"
+    [ -n "$c_caveman" ] && [ -n "$c_pony" ] && printf "%s" "$SP"
+    [ -n "$c_pony" ] && printf "%s" "$c_pony"
+  else
+    [ -n "$c_caveman" ] && printf "\n%s" "$c_caveman"
+    [ -n "$c_pony"    ] && printf "\n%s" "$c_pony"
+  fi
 }
 print_B() {
   printf "%s" "$c_model"
   [ -n "$c_ctx" ] && printf "%s%s" "$SP" "$c_ctx"
 }
 print_C() {
-  local first=1
-  if [ -n "$c_gem" ];  then printf "%s" "$c_gem";  first=0; fi
+  first=1
   if [ -n "$c_rl" ];   then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_rl";   first=0; fi
   if [ -n "$c_rl7" ];  then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_rl7";  first=0; fi
   if [ -n "$c_cost" ]; then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_cost"; first=0; fi
@@ -287,8 +277,12 @@ if [ "$cols" -le 36 ]; then
     used_w=$(( 3 + ${#dir_n} + 1 ))
     [ $(( cols - used_w - ctx_min_w )) -ge 0 ] && printf " %s" "$c_ctx_min"
   fi
+  # Badges never dropped: on their own line(s) below.
+  [ "$wD" -gt 0 ] && print_badges_wrapped "$cols"
 elif [ "$wBC" -le "$effective" ]; then
   print_A; printf "\n"; print_B; printf "%s" "$SP"; print_C
 else
   print_A; printf "\n"; print_B; printf "\n"; print_C
 fi
+
+exit 0
