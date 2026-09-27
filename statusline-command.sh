@@ -3,11 +3,6 @@ input=$(cat)
 
 cwd=$(echo "$input"      | jq -r '.workspace.current_dir // .cwd // ""')
 model=$(echo "$input"    | jq -r '.model.display_name // ""')
-raw_model="$model"   # keep the raw label to detect ccr-code sessions (vs Opus)
-# Clean CCR display: drop "openrouter,"/"gemini," prefix and ":free" suffix (cosmetic)
-model="${model#openrouter,}"
-model="${model#gemini,}"
-model="${model%:free}"
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
 ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
 used_tok=$(echo "$input" | jq -r '(.context_window.current_usage.input_tokens // 0) + (.context_window.current_usage.cache_read_input_tokens // 0) + (.context_window.current_usage.cache_creation_input_tokens // 0)')
@@ -57,9 +52,22 @@ if [ -f "$cav_flag" ] && [ ! -L "$cav_flag" ]; then
   esac
 fi
 
+# ── Ponytail mode (optional badge; absent if plugin not installed or off) ────────
+# Same hardening as the caveman block: flag written by ponytail's SessionStart hook
+# (~/.claude/.ponytail-active), symlinks refused, 64-byte cap, [a-z0-9-] only,
+# whitelisted mode. Missing flag or "off" renders nothing.
+pony_label=""
+pony_flag="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.ponytail-active"
+if [ -f "$pony_flag" ] && [ ! -L "$pony_flag" ]; then
+  pony_mode=$(head -c 64 "$pony_flag" 2>/dev/null | tr -d '\n\r' | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
+  case "$pony_mode" in
+    lite|full|ultra|review)
+      pony_label=$(printf '%s' "$pony_mode" | tr '[:lower:]' '[:upper:]') ;;
+  esac
+fi
+
 # ── Context bar ───────────────────────────────────────────────────────────────
 ctx_bar="" ctx_pct_label="" ctx_tok_label="" bar_color="\033[32m"
-compact_warn=0; COMPACT_WARN_PCT=45   # show "/compact!" nudge at/above this ctx %
 if [ -n "$used_pct" ]; then
   ctx=$(printf "%.0f" "$used_pct")
   filled=$(( ctx / 10 )); empty=$(( 10 - filled ))
@@ -67,7 +75,6 @@ if [ -n "$used_pct" ]; then
   i=0; while [ $i -lt $filled ]; do bar="${bar}■"; i=$((i+1)); done
   i=0; while [ $i -lt $empty  ]; do bar="${bar}□"; i=$((i+1)); done
   ctx_bar="$bar"; ctx_pct_label="${ctx}%"
-  [ "$ctx" -ge "$COMPACT_WARN_PCT" ] 2>/dev/null && compact_warn=1
   if   [ "$ctx" -ge 90 ]; then bar_color="\033[31m"
   elif [ "$ctx" -ge 70 ]; then bar_color="\033[91m"
   elif [ "$ctx" -ge 50 ]; then bar_color="\033[33m"
@@ -125,30 +132,6 @@ if [ -n "$cost" ]; then
   [ -n "$cost_fmt" ] && cost_label="\$${cost_fmt}"
 fi
 
-# ── Gemini free-tier budget (ccr code sessions only; Opus sessions skip it) ─────
-# LIVE (re-reads gemini-state.json each render) so it tracks the real Gemini↔OpenRouter
-# state even mid-session, unlike the launch-fixed model label. ASCII only (exact width).
-gem_label="" gem_color="\033[32m"
-case "$raw_model" in
-  gemini,*|openrouter,*|*:free)
-    gstate="$HOME/.claude-code-router/gemini-state.json"
-    if [ -f "$gstate" ]; then
-      gbudget=12   # keep in sync with config transformers gemini-failover options.dailyBudget
-      gcd=$(jq -r '(.cooldownUntil // 0)|floor' "$gstate" 2>/dev/null)
-      gcnt=$(jq -r '(.count // 0)|floor' "$gstate" 2>/dev/null)
-      gnow=$(( $(date +%s) * 1000 ))
-      if [ -n "$gcd" ] && [ "$gcd" -gt "$gnow" ] 2>/dev/null; then
-        gmin=$(( (gcd - gnow) / 60000 ))
-        if [ "$gmin" -ge 60 ]; then gem_label="Gem>OR $(( gmin / 60 ))h"; else gem_label="Gem>OR ${gmin}m"; fi
-        gem_color="\033[90m"   # dim: Gemini spent, serving OpenRouter
-      else
-        gem_label="Gem ${gcnt}/${gbudget}"
-        [ "$gcnt" -ge $(( gbudget - 3 )) ] 2>/dev/null && gem_color="\033[33m"   # near failover
-      fi
-    fi
-    ;;
-esac
-
 # ── Visible widths of each group ──────────────────────────────────────────────
 wA_fixed=$(( ${#dir} + 4 ))
 [ -n "$git_dirty" ] && wA_dirty=$(( 1 + ${#git_dirty} )) || wA_dirty=0
@@ -156,9 +139,19 @@ wA_fixed=$(( ${#dir} + 4 ))
 wA_branch_overhead=$(( 2 + 3 + wA_dirty + wA_sync ))
 # Caveman badge visible width: SP(2) + 🦴(2 cols) + space(1) + label
 [ -n "$cav_label" ] && wA_caveman=$(( 2 + 3 + ${#cav_label} )) || wA_caveman=0
+# Ponytail badge visible width: SP(2) + 🦄(2 cols) + space(1) + label. Folded into
+# wA_caveman so the branch-truncation and layout math below need no further change.
+if [ -n "$pony_label" ]; then
+  wA_pony=$(( 2 + 3 + ${#pony_label} ))
+  # Narrow terminal: dir + both badges would overflow line 1, so drop the ponytail badge.
+  if [ $(( wA_fixed + wA_caveman + wA_pony )) -gt "$cols" ]; then
+    pony_label=""
+  else
+    wA_caveman=$(( wA_caveman + wA_pony ))
+  fi
+fi
 
 wC=$(( 4 + ${#now} ))
-[ -n "$gem_label" ]  && wC=$(( wC + 1 + ${#gem_label} + 2 ))
 [ -n "$rl_label" ]   && wC=$(( wC + 1 + ${#rl_label} + 2 ))
 [ -n "$rl7_label" ]  && wC=$(( wC + 1 + ${#rl7_label} + 2 ))
 [ -n "$cost_label" ] && wC=$(( wC + ${#cost_label} + 3 + 2 ))
@@ -168,7 +161,6 @@ ctx_w=0
 if [ -n "$ctx_bar" ]; then
   ctx_w=$(( 2 + 10 + 1 + ${#ctx_pct_label} ))
   [ -n "$ctx_tok_label" ] && ctx_w=$(( ctx_w + 1 + ${#ctx_tok_label} ))
-  [ "$compact_warn" -eq 1 ] && ctx_w=$(( ctx_w + 1 + 9 ))   # " /compact!"
 fi
 max_model=$(( effective - 4 - ctx_w - wC ))
 [ "$max_model" -lt 8 ] && max_model=8
@@ -180,7 +172,6 @@ wB=$(( 2 + ${#model} ))
 if [ -n "$ctx_bar" ]; then
   wB=$(( wB + 2 + 10 + 1 + ${#ctx_pct_label} ))
   [ -n "$ctx_tok_label" ] && wB=$(( wB + 1 + ${#ctx_tok_label} ))
-  [ "$compact_warn" -eq 1 ] && wB=$(( wB + 1 + 9 ))   # " /compact!"
 fi
 
 # ── Branch: truncate or drop to fit line 1 ───────────────────────────────────
@@ -219,13 +210,15 @@ c_sync=""
 c_caveman=""
 [ -n "$cav_label" ] && c_caveman=$(printf "\033[38;5;172m🦴 %s\033[0m" "$cav_label")
 
+c_pony=""
+[ -n "$pony_label" ] && c_pony=$(printf "\033[38;5;177m🦄 %s\033[0m" "$pony_label")
+
 c_model=$(printf "\033[35m◆ %s\033[0m" "$model")
 
 c_ctx=""
 if [ -n "$ctx_bar" ]; then
   c_ctx=$(printf "${bar_color}%s %s\033[0m" "$ctx_bar" "$ctx_pct_label")
   [ -n "$ctx_tok_label" ] && c_ctx="${c_ctx}$(printf " \033[2m%s\033[0m" "$ctx_tok_label")"
-  [ "$compact_warn" -eq 1 ] && c_ctx="${c_ctx}$(printf " \033[1;31m/compact!\033[0m")"
 fi
 
 c_rl=""
@@ -241,9 +234,6 @@ fi
 c_cost=""
 [ -n "$cost_label" ] && c_cost=$(printf "\033[32m💰 %s\033[0m" "$cost_label")
 
-c_gem=""
-[ -n "$gem_label" ] && c_gem=$(printf "${gem_color}%s\033[0m" "$gem_label")
-
 c_time=""
 
 # ── Layout decision ───────────────────────────────────────────────────────────
@@ -257,6 +247,7 @@ print_A() {
   [ -n "$c_branch"  ] && printf "%s%s" "$SP" "$c_branch"
   [ -n "$c_sync"    ] && printf "%s%s" "$SP" "$c_sync"
   [ -n "$c_caveman" ] && printf "%s%s" "$SP" "$c_caveman"
+  [ -n "$c_pony"    ] && printf "%s%s" "$SP" "$c_pony"
 }
 print_B() {
   printf "%s" "$c_model"
@@ -264,7 +255,6 @@ print_B() {
 }
 print_C() {
   local first=1
-  if [ -n "$c_gem" ];  then printf "%s" "$c_gem";  first=0; fi
   if [ -n "$c_rl" ];   then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_rl";   first=0; fi
   if [ -n "$c_rl7" ];  then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_rl7";  first=0; fi
   if [ -n "$c_cost" ]; then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_cost"; first=0; fi
