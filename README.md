@@ -21,7 +21,7 @@ On narrow terminals it collapses gracefully; on very narrow ones it shows only d
 - 5-hour rate-limit percentage with a reset countdown (`↺NNm`)
 - Optional weekly rate-limit percentage + reset countdown, if your plan reports it
 - Session cost in USD
-- Optional "caveman mode" badge (`🦴 ULTRA`) and "ponytail mode" badge (`🦄 FULL`) — each renders only if the plugin's flag file (`~/.claude/.caveman-active`, `~/.claude/.ponytail-active`) exists with a valid mode, otherwise invisible, so it never breaks a shared setup. The ponytail badge is dropped automatically when the directory plus both badges would not fit the terminal width
+- Optional "caveman mode" badge (`🦴 ULTRA`) and "ponytail mode" badge (`🦄 FULL`) — each renders only if the plugin's flag file (`.caveman-active`, `.ponytail-active` in `~/.claude`, or in `$CLAUDE_CONFIG_DIR` if set) exists with a valid mode, otherwise invisible, so it never breaks a shared setup. The ponytail badge is dropped automatically on narrow terminals, when it would overflow the first line or squeeze the git branch out
 - Width-aware: reflows between one-line and stacked layouts based on `$COLUMNS`/`tput`
 - No external state, no network, no temp files — reads stdin JSON, prints, exits
 
@@ -57,7 +57,7 @@ Restart Claude Code (or open a new session). The status line updates on each tur
 
 ## How it works
 
-Claude Code pipes a JSON blob to the command on stdin. The script reads it with `jq`, extracts the fields it needs (`workspace.current_dir`, `model.display_name`, `context_window.*`, `cost.total_cost_usd`, `rate_limits.five_hour.*`), measures terminal width, then prints colored segments. No flags, no config file — edit the script directly if you want different colors or segments.
+Claude Code pipes a JSON blob to the command on stdin. The script reads it with `jq`, extracts the fields it needs (`workspace.current_dir`, `model.display_name`, `context_window.*`, `cost.total_cost_usd`, `rate_limits.five_hour.*`, `rate_limits.seven_day.*`), measures terminal width, then prints colored segments. No flags, no config file — edit the script directly if you want different colors or segments.
 
 ## Customizing
 

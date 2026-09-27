@@ -28,13 +28,9 @@ fi
 effective=$(( cols - 4 ))
 
 # ── Git ───────────────────────────────────────────────────────────────────────
-git_branch="" git_dirty="" git_sync=""
+git_branch=""
 if [ -n "$cwd" ] && [ -d "$cwd/.git" ]; then
   git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
-  if [ -n "$git_branch" ]; then
-    true
-    true
-  fi
 fi
 
 # ── Caveman mode (optional badge; absent if plugin not installed) ───────────────
@@ -134,17 +130,17 @@ fi
 
 # ── Visible widths of each group ──────────────────────────────────────────────
 wA_fixed=$(( ${#dir} + 4 ))
-[ -n "$git_dirty" ] && wA_dirty=$(( 1 + ${#git_dirty} )) || wA_dirty=0
-[ -n "$git_sync"  ] && wA_sync=$(( 2 + ${#git_sync} ))   || wA_sync=0
-wA_branch_overhead=$(( 2 + 3 + wA_dirty + wA_sync ))
+wA_branch_overhead=5   # SP(2) + "⎇ "(3)
 # Caveman badge visible width: SP(2) + 🦴(2 cols) + space(1) + label
 [ -n "$cav_label" ] && wA_caveman=$(( 2 + 3 + ${#cav_label} )) || wA_caveman=0
 # Ponytail badge visible width: SP(2) + 🦄(2 cols) + space(1) + label. Folded into
 # wA_caveman so the branch-truncation and layout math below need no further change.
 if [ -n "$pony_label" ]; then
   wA_pony=$(( 2 + 3 + ${#pony_label} ))
-  # Narrow terminal: dir + both badges would overflow line 1, so drop the ponytail badge.
-  if [ $(( wA_fixed + wA_caveman + wA_pony )) -gt "$cols" ]; then
+  # Narrow terminal: drop the ponytail badge when dir + badges overflow line 1, or when
+  # keeping it would squeeze the git branch out (< 7 cols left). Info beats decoration.
+  pony_room=$(( effective - wA_fixed - wA_branch_overhead - wA_caveman - wA_pony ))
+  if [ $(( wA_fixed + wA_caveman + wA_pony )) -gt "$effective" ] || { [ -n "$git_branch" ] && [ "$pony_room" -lt 7 ]; }; then
     pony_label=""
   else
     wA_caveman=$(( wA_caveman + wA_pony ))
@@ -176,7 +172,6 @@ fi
 
 # ── Branch: truncate or drop to fit line 1 ───────────────────────────────────
 branch_display="$git_branch"
-show_sync="$git_sync"
 
 if [ -n "$git_branch" ]; then
   max_branch=$(( effective - wA_fixed - wA_branch_overhead - wA_caveman ))
@@ -184,8 +179,6 @@ if [ -n "$git_branch" ]; then
   if [ $max_branch -lt 7 ]; then
     branch_display=""
     wA_branch_overhead=0
-    w1_nosync=$(( wA_fixed + (${#git_dirty} > 0 ? 1 + ${#git_dirty} : 0) ))
-    [ $(( effective - w1_nosync )) -lt $(( 2 + ${#git_sync} )) ] && show_sync=""
   elif [ $max_branch -lt ${#git_branch} ]; then
     trunc=$(( max_branch - 3 ))
     [ $trunc -lt 4 ] && trunc=4
@@ -201,11 +194,7 @@ c_dir=$(printf "\033[96m📂 %s\033[0m" "$dir")
 c_branch=""
 if [ -n "$branch_display" ]; then
   c_branch=$(printf "\033[32m⎇ %s\033[0m" "$branch_display")
-  [ -n "$git_dirty" ] && c_branch="${c_branch}$(printf " \033[33m%s\033[0m" "$git_dirty")"
 fi
-
-c_sync=""
-[ -n "$show_sync" ] && c_sync=$(printf "\033[34m%s\033[0m" "$show_sync")
 
 c_caveman=""
 [ -n "$cav_label" ] && c_caveman=$(printf "\033[38;5;172m🦴 %s\033[0m" "$cav_label")
@@ -237,7 +226,7 @@ c_cost=""
 c_time=""
 
 # ── Layout decision ───────────────────────────────────────────────────────────
-wA=$(( wA_fixed + wA_branch_overhead + ${#branch_display} + (${#show_sync} > 0 ? 2 + ${#show_sync} : 0) + wA_caveman ))
+wA=$(( wA_fixed + wA_branch_overhead + ${#branch_display} + wA_caveman ))
 wBC=$(( wB + 2 + wC ))
 w1=$(( wA + 2 + wBC ))
 
@@ -245,7 +234,6 @@ w1=$(( wA + 2 + wBC ))
 print_A() {
   printf "%s" "$c_dir"
   [ -n "$c_branch"  ] && printf "%s%s" "$SP" "$c_branch"
-  [ -n "$c_sync"    ] && printf "%s%s" "$SP" "$c_sync"
   [ -n "$c_caveman" ] && printf "%s%s" "$SP" "$c_caveman"
   [ -n "$c_pony"    ] && printf "%s%s" "$SP" "$c_pony"
 }
@@ -254,7 +242,7 @@ print_B() {
   [ -n "$c_ctx" ] && printf "%s%s" "$SP" "$c_ctx"
 }
 print_C() {
-  local first=1
+  first=1
   if [ -n "$c_rl" ];   then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_rl";   first=0; fi
   if [ -n "$c_rl7" ];  then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_rl7";  first=0; fi
   if [ -n "$c_cost" ]; then [ $first -eq 0 ] && printf "%s" "$SP"; printf "%s" "$c_cost"; first=0; fi
