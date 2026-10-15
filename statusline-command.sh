@@ -43,7 +43,7 @@ cav_flag="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.caveman-active"
 if [ -f "$cav_flag" ] && [ ! -L "$cav_flag" ]; then
   cav_mode=$(head -c 64 "$cav_flag" 2>/dev/null | tr -d '\n\r' | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
   case "$cav_mode" in
-    lite|full|ultra|wenyan-lite|wenyan|wenyan-full|wenyan-ultra|commit|review|compress)
+    caveman|ultracave|megacave|lite|full|ultra|wenyan-lite|wenyan|wenyan-full|wenyan-ultra|commit|review|compress)
       cav_label=$(printf '%s' "$cav_mode" | tr '[:lower:]' '[:upper:]') ;;
   esac
 fi
